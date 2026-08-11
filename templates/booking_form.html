@@ -1,0 +1,221 @@
+{% extends 'base.html' %}
+{% block content %}
+
+<style>
+.conflict-box{background:var(--amber-light);border:1.5px solid #f5e0a0;border-radius:10px;padding:14px 16px;margin-bottom:16px;font-size:13px;}
+.conflict-box .conflict-title{font-weight:600;color:var(--amber);margin-bottom:8px;display:flex;align-items:center;gap:8px;}
+.conflict-item{padding:6px 0;border-bottom:1px solid #f5e0a0;color:var(--text);}
+.conflict-item:last-child{border-bottom:none;}
+.suggestion-box{background:var(--green-light);border:1.5px solid #b8ddc8;border-radius:10px;padding:14px 16px;margin-top:12px;}
+.suggestion-box .s-title{font-weight:600;color:var(--green);font-size:13px;margin-bottom:8px;}
+.suggestion-pill{display:inline-block;background:#fff;border:1.5px solid var(--green);color:var(--green);padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;margin-right:6px;margin-bottom:4px;transition:all .15s;}
+.suggestion-pill:hover{background:var(--green);color:#fff;}
+.checking{display:none;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin-top:8px;}
+.checking.show{display:flex;}
+.spinner{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--green);border-radius:50%;animation:spin .6s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.available-badge{display:none;align-items:center;gap:6px;font-size:13px;color:var(--green);font-weight:500;margin-top:8px;}
+.available-badge.show{display:flex;}
+.available-badge svg{width:16px;height:16px;}
+.time-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+</style>
+
+<div style="max-width:620px;">
+  <div style="margin-bottom:24px;">
+    <a href="{% url 'bookings' %}" style="font-size:13px;color:var(--muted);">← Back to Bookings</a>
+    <div style="font-family:'DM Serif Display',serif;font-size:24px;margin-top:8px;">New Booking</div>
+    <div style="font-size:13px;color:var(--muted);margin-top:4px;">Fill in the details below. Conflicts will be checked automatically.</div>
+  </div>
+
+  {% if has_conflict %}
+  <div class="conflict-box">
+    <div class="conflict-title">
+      <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      Time Conflict Detected
+    </div>
+    {% for c in conflict_info %}
+    <div class="conflict-item">
+      Booked by <strong>{{ c.booked_by.get_full_name|default:c.booked_by.username }}</strong>
+      — {{ c.start_time|time:"g:i A" }} to {{ c.end_time|time:"g:i A" }}
+      <span class="status {{ c.status }}" style="font-size:10px;margin-left:6px;">{{ c.get_status_display }}</span>
+    </div>
+    {% endfor %}
+    <div style="margin-top:12px;font-size:13px;color:var(--amber);">Do you still want to submit this booking?</div>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <form method="POST" id="booking-form">
+      {% csrf_token %}
+      {% if has_conflict %}
+      <input type="hidden" name="force_submit" value="1"/>
+      {% endif %}
+
+      <div style="font-size:12px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:.8px;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid var(--border);">Facility & Schedule</div>
+
+      <div class="form-group">
+        <label class="form-label">Facility</label>
+        <select name="facility" id="facility-select" class="form-control" required>
+          <option value="">Select a facility...</option>
+          {% for f in facilities %}
+          <option value="{{ f.pk }}"
+            {% if form_data.facility == f.pk|stringformat:'s' or preselect == f.pk|stringformat:'s' %}selected{% endif %}>
+            {{ f.name }} — {{ f.location }} (cap: {{ f.capacity }})
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Date</label>
+        <input type="date" name="date" id="date-input" class="form-control"
+          value="{{ form_data.date|default:today }}" min="{{ today }}" required/>
+      </div>
+
+      <div class="time-grid">
+        <div class="form-group">
+          <label class="form-label">Start Time</label>
+          <input type="time" name="start_time" id="start-time" class="form-control"
+            value="{{ form_data.start_time|default:'' }}" required/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">End Time</label>
+          <input type="time" name="end_time" id="end-time" class="form-control"
+            value="{{ form_data.end_time|default:'' }}" required/>
+        </div>
+      </div>
+
+      <!-- Conflict feedback -->
+      <div class="checking" id="checking-indicator">
+        <div class="spinner"></div> Checking availability...
+      </div>
+      <div class="available-badge" id="available-badge">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+        Facility is available for this time slot!
+      </div>
+      <div id="conflict-result"></div>
+
+      <div style="font-size:12px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:.8px;margin:20px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--border);">Details</div>
+
+      <div class="form-group">
+        <label class="form-label">Purpose / Description</label>
+        <textarea name="purpose" class="form-control" placeholder="What is this booking for?">{{ form_data.purpose|default:'' }}</textarea>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Number of Attendees</label>
+        <input type="number" name="number_of_attendees" class="form-control"
+          value="{{ form_data.number_of_attendees|default:'1' }}" min="1" max="500"/>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:8px;">
+        {% if has_conflict %}
+        <button type="submit" class="btn btn-amber">Submit Anyway</button>
+        <a href="{% url 'booking_create' %}" class="btn btn-outline">Change Time</a>
+        {% else %}
+        <button type="submit" class="btn btn-primary" id="submit-btn">Submit Booking</button>
+        {% endif %}
+        <a href="{% url 'bookings' %}" class="btn btn-outline">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const CONFLICT_URL = '{% url "booking_check_conflict" %}';
+const CSRF = document.querySelector('[name=csrfmiddlewaretoken]').value;
+let debounceTimer;
+
+function getCookie(name) {
+  return document.cookie.split(';').map(c => c.trim())
+    .find(c => c.startsWith(name + '='))?.split('=')[1] || '';
+}
+
+function showChecking() {
+  document.getElementById('checking-indicator').classList.add('show');
+  document.getElementById('available-badge').classList.remove('show');
+  document.getElementById('conflict-result').innerHTML = '';
+}
+
+function hideChecking() {
+  document.getElementById('checking-indicator').classList.remove('show');
+}
+
+async function checkConflict() {
+  const facility = document.getElementById('facility-select').value;
+  const date = document.getElementById('date-input').value;
+  const start = document.getElementById('start-time').value;
+  const end = document.getElementById('end-time').value;
+
+  if (!facility || !date || !start || !end) return;
+  if (start >= end) {
+    document.getElementById('conflict-result').innerHTML = `
+      <div style="color:var(--red);font-size:13px;margin-top:8px;display:flex;align-items:center;gap:6px;">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        End time must be after start time.
+      </div>`;
+    return;
+  }
+
+  showChecking();
+
+  try {
+    const res = await fetch(CONFLICT_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF},
+      body: JSON.stringify({facility_id: facility, date, start_time: start, end_time: end}),
+    });
+    const data = await res.json();
+    hideChecking();
+
+    if (data.error) {
+      document.getElementById('conflict-result').innerHTML = '';
+      return;
+    }
+
+    if (data.conflict) {
+      let html = `<div class="conflict-box" style="margin-top:10px;">
+        <div class="conflict-title">
+          <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          Time Conflict!
+        </div>`;
+      data.conflicts.forEach(c => {
+        html += `<div class="conflict-item">Booked by <strong>${c.booked_by}</strong> — ${c.start_time.slice(0,5)} to ${c.end_time.slice(0,5)} <span style="font-size:10px;font-weight:600;color:var(--amber);">${c.status}</span></div>`;
+      });
+      if (data.suggestions && data.suggestions.length) {
+        html += `<div class="suggestion-box"><div class="s-title">Available time slots:</div>`;
+        data.suggestions.forEach(s => {
+          html += `<span class="suggestion-pill" onclick="applySlot('${s.start}','${s.end}')">${s.start} – ${s.end}</span>`;
+        });
+        html += `</div>`;
+      }
+      html += `</div>`;
+      document.getElementById('conflict-result').innerHTML = html;
+      document.getElementById('available-badge').classList.remove('show');
+    } else {
+      document.getElementById('conflict-result').innerHTML = '';
+      document.getElementById('available-badge').classList.add('show');
+    }
+  } catch(e) {
+    hideChecking();
+  }
+}
+
+function applySlot(start, end) {
+  document.getElementById('start-time').value = start;
+  document.getElementById('end-time').value = end;
+  checkConflict();
+}
+
+function debounceCheck() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(checkConflict, 600);
+}
+
+document.getElementById('facility-select').addEventListener('change', debounceCheck);
+document.getElementById('date-input').addEventListener('change', debounceCheck);
+document.getElementById('start-time').addEventListener('change', debounceCheck);
+document.getElementById('end-time').addEventListener('change', debounceCheck);
+</script>
+
+{% endblock %}
